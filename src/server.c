@@ -1,220 +1,195 @@
 /*
- ** server.c -- a stream socket server demo
+ ** HASAN HÜSEYİN PAY 3.12.2017
  */
 
+#include <time.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
+
 #include <netdb.h>
-#include <signal.h>
-#include <time.h>
 
 #define PORT "34490"  // the port users will be connecting to
-#define PLAYERCOUNT 3     // how many pending connections queue will hold
-#define NAMELEN 100
+#define PLAYERCOUNT 3
+#define NAMELEN 100   // player max names length
 
-void INThandler(int); /* Interrupt handler */
-int connection_handler(int sock, char *buff);
+/*
+ * Interrupt handler to exit with CTRL-C
+ */
+void INThandler(int);
 
-int myrecv(int sockfd, void *buff, int size, char *err_msg); /* recv function with error checking*/
-int mysend(int sockfd, char *msg, int len, char *err_msg); /* send function with error checking*/
-void game_loop(int p1_fd, int p2_fd, char *p1_name, char *p2_name);
+/*
+ * get the server sockfd, fill the buff with player name, return player sockfd
+ */
+int connection_handler(int sockfd, char *buff);
 
-int main_sockfd;
+/*
+ * send and recv function with error checking
+ */
+int myrecv(int sockfd, void *buff, int size, char *err_msg);
+
+int mysend(int sockfd, char *msg, int len, char *err_msg);
+
+/*
+ * game play in game_loop
+ */
+void game_loop(int *players_fd, char players_names[PLAYERCOUNT][NAMELEN]);
+
+int server_sockfd;
 
 int main(void)
 {
-	signal(SIGINT, INThandler);
+        signal(SIGINT, INThandler);
 
-	struct addrinfo hints, *servinfo;
-	int rv;
+        int player_sockfd[PLAYERCOUNT];
+        char player_name[PLAYERCOUNT][NAMELEN];
+        struct addrinfo hints, *servinfo;
 
-	int p1_sockfd;
-	int p2_sockfd;
-	char p1_name[NAMELEN];
-	char p2_name[NAMELEN];
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = AI_PASSIVE; // use my IP
 
-	int player_sockfd[PLAYERCOUNT];
-	char player_name[PLAYERCOUNT][NAMELEN];
+        int rv;
+        if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
+                fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+                return 1;
+        }
+        while (1) {  // main loop
+                if ((server_sockfd = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol)) == -1) {
+                        close(server_sockfd);
+                        perror("server: socket");
+                        exit(1);
+                }
 
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_PASSIVE; // use my IP
+                if (bind(server_sockfd, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
+                        close(server_sockfd);
+                        perror("server: bind");
+                        exit(1);
+                }
 
-	if((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
-		return 1;
-	}
-	while(1) {  // main loop
-		if((main_sockfd = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol)) == -1) {
-			close(main_sockfd);
-			perror("server: bind");
-			exit(1);
-		}
+                if (listen(server_sockfd, PLAYERCOUNT) == -1) {
+                        close(server_sockfd);
+                        perror("server: listen");
+                        exit(1);
+                }
 
-		if(bind(main_sockfd, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
-			close(main_sockfd);
-			perror("server: bind");
-			exit(1);
-		}
+                printf("\n\nThe game will be started, waiting for %d players \n", PLAYERCOUNT);
 
-		freeaddrinfo(servinfo); // all done with this structure
+                for (int i = 0; i < PLAYERCOUNT; i++) {
+                        player_sockfd[i] = connection_handler(server_sockfd, player_name[i]); // get the player sockfd
+                }
+                close(server_sockfd); // no need anymore
 
-		if(listen(main_sockfd, PLAYERCOUNT) == -1) {
-			close(main_sockfd);
-			perror("listen");
-			exit(1);
-		}
+                game_loop(&player_sockfd[0], player_name); // game start
 
-		printf("\n\nThe game will be started, waiting for %D players \n",
-		PLAYERCOUNT);
-		for(int i = 0; i < PLAYERCOUNT; i++) {
-			player_sockfd[i] = connection_handler(main_sockfd, player_name[i]);
-		}
-		close(main_sockfd);
+                for (int i = 0; i < PLAYERCOUNT; i++) // close player sockfds
+                        close(player_sockfd[0]);
+        }
 
-		game_loop(player_sockfd,player_name);
-
-	}
-
-	return 0;
+        return 0;
 }
 
 int connection_handler(int sockfd, char *buff)
 {
-	struct sockaddr_storage their_addr; // connector's address information
-	socklen_t sin_size = sizeof(their_addr);
-	int new_fd;
+        struct sockaddr_storage their_addr; // connector's address information
+        socklen_t sin_size = sizeof(their_addr);
+        int new_fd; // sockfd of incoming conneciton
 
-	new_fd = accept(main_sockfd, (struct sockaddr *)&their_addr, &sin_size);
-	if(new_fd == -1) {
-		perror("accept");
-	}
+        new_fd = accept(sockfd, (struct sockaddr *) &their_addr, &sin_size);
+        if (new_fd == -1) {
+                perror("accept");
+        }
 
-	int numbytes;
-	printf("Connection accepted..\n");
-	// get player name
-	numbytes = myrecv(new_fd, buff, NAMELEN, "get player name");
+        int numbytes;
+        printf("Connection accepted..\n");
 
-	buff[numbytes] = '\0';
-	printf("%s logged in\n", buff);
-	return new_fd;
+        // get player name
+        numbytes = myrecv(new_fd, buff, NAMELEN - 1, "get player name");
+
+        buff[numbytes] = '\0';
+        printf("%s logged in\n", buff);
+        return new_fd;
 
 }
 
-void game_loop(int (*players_fd)[], char *players_names[][])
+void game_loop(int *players_fd, char players_names[PLAYERCOUNT][NAMELEN])
 {
-	printf("The game is starting \n");
-	srand(time(NULL));
-	int random_number = (rand() % 99) + 1;
-	int guessed_number = 0, converted_number;
+        printf("The game is starting \n");
+        srand(time(NULL));
 
-	for(int i = 0; i <PLAYERCOUNT; i++) {
-		mysend(players_fd[i], "S", 2, "p1 S send"); /* inform player 1 to game is starting */
-	}
+        int random_number = (rand() % 99) + 1;
+        int guessed_number = 0, converted_number;
 
-	sleep(1);
-	int round = 1;
+        for (int i = 0; i < PLAYERCOUNT; i++) {
+                mysend(players_fd[i], "S", 1, "p1 S send"); /* inform player 1 to game is starting */
+        }
 
-	while(1) {
+        sleep(1);
+        int round = 1;
 
-		for(int i = 0; i < PLAYERCOUNT; i++) {
+        while (1) {
 
-			printf("\nRound %d, %s's turn\n", round, players_names[i]);
-			mysend(players_fd[i], "R", 1, "p1 R send"); // send R char to wake player 1
+                printf("\n");
+                for (int i = 0; i < PLAYERCOUNT; i++) {
 
-			myrecv(p1_fd, &guessed_number, sizeof(int), "player  guessed number");
-			converted_number = ntohl(guessed_number);
-			printf("%s guessed %d\n", p1_name, converted_number);
+                        printf("Round %d, %s's turn\n", round, players_names[i]);
+                        mysend(players_fd[i], "R", 1, "p1 R send"); // send R char to wake player 1
 
-			if(converted_number == random_number) {
-				printf("%s won the game\n", p1_name);
-				mysend(p1_fd, "=", 1, "p1 = send");
-				mysend(p2_fd, "-", 1, "p2 - send");
-				return;
-			} else if(converted_number > random_number) {
-				mysend(p1_fd, ">", 1, "p1 > send");
-			} else if(converted_number < random_number) {
-				mysend(p1_fd, "<", 1, "p1 < send");
-			} else {
-				printf("error at %d\n", __LINE__);
-				exit(1);
-			}
-		}
-		myrecv(p1_fd, &guessed_number, sizeof(int), "p1 recv guessed number");
-		converted_number = ntohl(guessed_number);
-		printf("%s guessed %d\n", p1_name, converted_number);
+                        myrecv(players_fd[i], &guessed_number, sizeof(int), "player  guessed number");
+                        converted_number = ntohl(guessed_number);
+                        printf("%s guessed %d\n", players_names[i], converted_number);
 
-		if(converted_number == random_number) {
-			printf("%s won the game\n", p1_name);
-			mysend(p1_fd, "=", 1, "p1 = send");
-			mysend(p2_fd, "-", 1, "p2 - send");
-			return;
-		} else if(converted_number > random_number) {
-			mysend(p1_fd, ">", 1, "p1 > send");
-		} else if(converted_number < random_number) {
-			mysend(p1_fd, "<", 1, "p1 < send");
-		} else {
-			printf("error at %d\n", __LINE__);
-			exit(1);
-		}
-
-		printf("Round %d, %s's turn \n", round, p2_name);
-		mysend(p2_fd, "R", 1, "p1 R send"); // send R char to wake player 2
-
-		myrecv(p2_fd, &guessed_number, sizeof(int), "p2 recv guessed number");
-		converted_number = ntohl(guessed_number);
-		printf("%s guessed %d\n", p2_name, converted_number);
-
-		if(converted_number == random_number) {
-			printf("%s won the game\n", p2_name);
-			mysend(p1_fd, "-", 1, "p1 - send");
-			mysend(p2_fd, "=", 1, "p2 = send");
-			return;
-		} else if(converted_number > random_number) {
-			mysend(p2_fd, ">", 1, "p2 > send");
-		} else if(converted_number < random_number) {
-			mysend(p2_fd, "<", 1, "p2 < send");
-		} else {
-			printf("error at %d\n", __LINE__);
-			exit(1);
-		}
-
-		round++;
-	}
+                        if (converted_number == random_number) {
+                                printf("%s won the game\n", players_names[i]);
+                                for (int j = 0; j < PLAYERCOUNT; j++) {
+                                        if (i == j)
+                                                mysend(players_fd[j], "=", 1, "= send");
+                                        else
+                                                mysend(players_fd[j], "-", 1, "- send"); // inform player
+                                }
+                                return;
+                        } else if (converted_number > random_number) {
+                                mysend(players_fd[i], ">", 1, " > send");
+                        } else if (converted_number < random_number) {
+                                mysend(players_fd[i], "<", 1, " < send");
+                        } else {
+                                printf("error at %d\n", __LINE__);
+                                exit(1);
+                        }
+                }
+                round++;
+        }
 
 }
 
 int mysend(int sockfd, char *msg, int len, char *err_msg)
 {
-	int bytes_send = 0;
-	if((bytes_send = send(sockfd, msg, len, 0)) == -1) {
-		perror("send");
-		printf("%s at %d\n", err_msg, __LINE__);
-		exit(0);
-	}
-	return bytes_send;
+        int bytes_send = 0;
+        if ((bytes_send = (int) send(sockfd, msg, (size_t) len, 0)) == -1) {
+                perror("send");
+                printf("%s at %d\n", err_msg, __LINE__);
+                exit(0);
+        }
+        return bytes_send;
 }
 
 int myrecv(int sockfd, void *buff, int len, char *err_msg)
 {
-	int numbytes;
-	if((numbytes = recv(sockfd, buff, len, 0)) == -1) {
-		perror("recv");
-		printf("%s at %d\n", err_msg, __LINE__);
-		exit(1);
-	}
-	return numbytes;
+        int numbytes;
+        if ((numbytes = (int) recv(sockfd, buff, (size_t) len, 0)) == -1) {
+                perror("recv");
+                printf("%s at %d\n", err_msg, __LINE__);
+                exit(1);
+        }
+        return numbytes;
 }
 
 void INThandler(int sig)
 {
-	printf("    closing main socket: %d\n", main_sockfd);
-	close(main_sockfd);
-	exit(0);
+        printf("    closing server socket: %d\n", server_sockfd);
+        close(server_sockfd);
+        exit(0);
 }
 
